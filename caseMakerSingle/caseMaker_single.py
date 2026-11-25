@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-make_rotor_case.py - build a single-rotor (rotor/stator, cyclicAMI) OpenFOAM case from rotor.msh
+make_rotor_case.py - build a single-rotor (rotor/stator, cyclicAMI) OpenFOAM case for pimpleFoam from rotor.msh
 
 Work is split between the two files in this folder:
   caseSetup.sh        shell: mkdir, constant/ + system/ dictionaries, fluent3DMeshToFoam,
@@ -135,6 +135,26 @@ def as_count(s):
     return v
 
 
+def as_word(s):
+    s = s.strip()
+    if not s or re.search(r"[\s;]", s):
+        raise ValueError("must be a single word (no spaces or ';')")
+    return s
+
+
+def as_pos_num(s):
+    if float(s) <= 0:
+        raise ValueError("must be positive")
+    return s.strip()                                    # keep the user's formatting (e.g. 0.000001)
+
+
+def as_nonneg_int(s):
+    v = int(s)
+    if v < 0:
+        raise ValueError("must be 0 or more")
+    return str(v)
+
+
 def hier_factors(n):
     """n = a*b*c with the three factors as equal as possible (for the hierarchical coeffs)."""
     best = (n, 1, 1)
@@ -255,6 +275,12 @@ def main():
     ap.add_argument("-s", "--scale", help="mesh unit scale, e.g. 0.001 for mm")
     ap.add_argument("--rpm", help="rotor speed in rpm")
     ap.add_argument("--nprocs", help="number of decomposition subdomains")
+    ap.add_argument("--end-time", help="controlDict endTime [s]")
+    ap.add_argument("--delta-t", help="controlDict deltaT [s]")
+    ap.add_argument("--write-deg", help="write one output every this many degrees of rotation")
+    ap.add_argument("--purge-write", help="controlDict purgeWrite (0 = keep all)")
+    ap.add_argument("--max-co", help="controlDict maxCo")
+    ap.add_argument("--rho-inf", help="rhoInf for the forces function object")
     ap.add_argument("--check", dest="check", action="store_const", const="y", help="run checkMesh")
     ap.add_argument("--no-check", dest="check", action="store_const", const="n", help="skip checkMesh")
     ap.add_argument("--defaults", action="store_true", help="do not ask; use defaults for anything not given")
@@ -279,12 +305,21 @@ def main():
     scale = ask("Mesh unit scale (0.001 if the mesh is in mm)", "", as_scale, a.scale, ask_now, shown="no scaling")
     rpm = ask("Rotor speed in rpm (negative = reverse direction)", RPM_DEFAULT, as_rpm, a.rpm, ask_now)
     nprocs = ask("Number of subdomains for decomposition", NPROCS_DEFAULT, as_count, a.nprocs, ask_now)
+    print(f"--- controlDict settings for {CFG['APPLICATION']} (Enter = default) ---")
+    end_time = ask("endTime [s]", CFG["END_TIME"], as_pos_num, a.end_time, ask_now)
+    delta_t = ask("deltaT [s] (initial time step)", CFG["DELTA_T"], as_pos_num, a.delta_t, ask_now)
+    write_deg = ask("Write output every N degrees of rotor rotation", WRITE_DEG, as_pos_num, a.write_deg, ask_now)
+    purge_write = ask("purgeWrite (number of time dirs kept, 0 = keep all)", CFG["PURGE_WRITE"],
+                      as_nonneg_int, a.purge_write, ask_now)
+    max_co = ask("maxCo", CFG["MAX_CO"], as_pos_num, a.max_co, ask_now)
+    rho_inf = ask("rhoInf for forces [kg/m3]", CFG["RHO_INF"], as_pos_num, a.rho_inf, ask_now)
     do_check = ask("Run checkMesh at the end? (y/n)", "y", as_yes_no, a.check, ask_now)
 
     omega = rpm * 2 * math.pi / 60                      # rpm -> rad/s (sign kept)
-    interval = (2 * math.pi / abs(omega)) * WRITE_DEG / 360   # time for WRITE_DEG degrees of rotation
+    interval = (2 * math.pi / abs(omega)) * float(write_deg) / 360   # time for write_deg degrees of rotation
     CFG.update(ROT_OMEGA=f"{omega:.6g}", NPROCS=str(nprocs), HIER_N=hier_factors(nprocs),
-               WRITE_INTERVAL=f"{interval:.4e}")
+               WRITE_INTERVAL=f"{interval:.4e}", END_TIME=end_time,
+               DELTA_T=delta_t, PURGE_WRITE=purge_write, MAX_CO=max_co, RHO_INF=rho_inf)
     print("\n--- summary ---")
     print(f"  mesh          {mesh}")
     print(f"  case dir      {case}" + ("   (files in 0/ constant/ system/ will be overwritten)"
@@ -292,7 +327,10 @@ def main():
     print(f"  scale         {scale or 'none'}")
     print(f"  rotor         {rpm:g} rpm = {CFG['ROT_OMEGA']} rad/s")
     print(f"  decomposition {nprocs} subdomains")
-    print(f"  write every   {WRITE_DEG} deg of rotation = {CFG['WRITE_INTERVAL']} s")
+    print(f"  solver        {CFG['APPLICATION']}  (fixed)")
+    print(f"  time          endTime {end_time} s, deltaT {delta_t} s, maxCo {max_co}")
+    print(f"  write every   {write_deg} deg of rotation = {CFG['WRITE_INTERVAL']} s, purgeWrite {purge_write}")
+    print(f"  rhoInf        {rho_inf}")
     print(f"  topoSet       {CFG['ROTOR_ZONE']}, {CFG['STATOR_ZONE']}  (dynamicMeshDict uses {CFG['ROTOR_ZONE']})")
     print(f"  checkMesh     {'yes' if do_check else 'no'}")
     if ask_now and not ask("Start? (y/n)", "y", as_yes_no, None, True):
